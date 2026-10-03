@@ -1,0 +1,2 @@
+# Store text with LF line endings so files work the same on Windows and in WSL.
+* text=auto eol=lf

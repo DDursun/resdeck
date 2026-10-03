@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "resdeck"
+version = "0.0.1"
+description = "Scenario and deck generation for reservoir simulation"
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy"]
+
+[dependency-groups]
+dev = ["pytest", "ruff", "pre-commit"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/resdeck"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, isort, pyupgrade, bugbear, numpy-specific rules
+select = ["E", "F", "I", "UP", "B", "NPY"]
