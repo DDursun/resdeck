@@ -72,7 +72,7 @@ def test_one_compdat_record_per_completion():
 
 def test_only_the_well_and_welldims_change(tmp_path):
     new = add_well(read(tmp_path), well())
-    expected = TEXT.replace("1 1 1 1 /", "2 2 2 2 /")
+    expected = TEXT.replace("1 1 1 1 /", "2 2 1 2 /")
     expected = expected.replace("TSTEP\n", format_well(well()) + "TSTEP\n")
     assert new.text == expected
 
@@ -85,7 +85,8 @@ def test_original_deck_is_not_changed(tmp_path):
 
 def test_welldims_keeps_later_items(tmp_path):
     deck = read(tmp_path, TEXT.replace("1 1 1 1 /", "5 2* 3 1* 7 /"))
-    assert "   6 2 1 4 1* 7 /   -- one well\n" in add_well(deck, well()).text
+    # 2* defaults connections and groups; the 3 is wells per group.
+    assert "   5 2 1 3 1* 7 /   -- one well\n" in add_well(deck, well()).text
 
 
 def test_welldims_is_added_when_missing(tmp_path):
@@ -189,7 +190,7 @@ def test_only_the_summary_section_is_extended(tmp_path):
 def test_summary_can_be_left_unchanged(tmp_path):
     text = add_well(read(tmp_path, SUMMARY_TEXT), well(), add_to_summary=False).text
     assert text.split("SCHEDULE\n")[0] == SUMMARY_TEXT.split("SCHEDULE\n")[0].replace(
-        "1 1 1 1 /", "2 2 2 2 /"
+        "1 1 1 1 /", "1 2 1 1 /"
     )
 
 
@@ -213,7 +214,7 @@ def test_injector_phase_follows_the_injected_fluid():
 def test_injector_is_added_like_a_producer(tmp_path):
     new = add_well(read(tmp_path), injector())
     assert format_well(injector()) + "TSTEP\n" in new.text
-    assert "   2 1 2 2 /" in new.text
+    assert "   2 1 1 2 /" in new.text
 
 
 def test_unknown_injected_fluid_raises():
@@ -284,10 +285,100 @@ def test_events_on_the_same_date_keep_their_order(tmp_path):
 
 
 def test_event_for_an_unknown_well_raises(tmp_path):
-    with pytest.raises(ValueError, match="well P9 is not defined"):
+    with pytest.raises(ValueError, match="well P9 is not defined by 11 Jan 2020"):
         shut_well(read(tmp_path, TIMED_TEXT), "P9", at=date(2020, 1, 11))
 
 
 def test_set_control_checks_the_control(tmp_path):
     with pytest.raises(ValueError, match="mode ORAT needs oil_rate"):
         set_control(read(tmp_path, TIMED_TEXT), "OLD", ProducerControl("ORAT"), date(2020, 1, 11))
+
+
+def test_event_before_the_well_is_drilled_raises(tmp_path):
+    deck = add_well(read(tmp_path, TIMED_TEXT), well(), at=date(2020, 1, 21))
+    with pytest.raises(ValueError, match="well P1 is not defined by 11 Jan 2020"):
+        shut_well(deck, "P1", at=date(2020, 1, 11))
+
+
+def test_control_change_before_the_well_is_drilled_raises(tmp_path):
+    deck = add_well(read(tmp_path, TIMED_TEXT), well(), at=date(2020, 1, 21))
+    with pytest.raises(ValueError, match="well P1 is not defined by 11 Jan 2020"):
+        set_control(deck, "P1", ProducerControl("BHP", bhp=100), at=date(2020, 1, 11))
+
+
+def test_event_on_the_drilling_date_is_allowed(tmp_path):
+    deck = add_well(read(tmp_path, TIMED_TEXT), well(), at=date(2020, 1, 11))
+    deck = shut_well(deck, "P1", at=date(2020, 1, 11))
+    assert deck.text.index("WELSPECS\n  'P1'") < deck.text.index("'P1' 'SHUT'")
+
+
+def test_event_at_the_start_needs_a_well_defined_at_the_start(tmp_path):
+    deck = add_well(read(tmp_path, TIMED_TEXT), well(), at=date(2020, 1, 11))
+    with pytest.raises(ValueError, match="well P1 is not defined by the start of the run"):
+        shut_well(deck, "P1", at=None)
+
+
+def test_welldims_counts_wells_already_in_the_deck(tmp_path):
+    deck = read(tmp_path, TEXT.replace("WELLDIMS\n-- sized for the base case\n   1 1 1 1 /", ""))
+    assert "RUNSPEC\nWELLDIMS\n  2 2 1 2 /\n" in add_well(deck, well()).text
+
+
+def test_welldims_already_large_enough_is_unchanged(tmp_path):
+    deck = read(tmp_path, TEXT.replace("1 1 1 1 /", "10 10 5 10 /"))
+    assert "   10 10 5 10 /   -- one well\n" in add_well(deck, well()).text
+
+
+def test_welldims_counts_wells_per_group(tmp_path):
+    other = Well("P2", 3, 3, (Completion(1, 1, 0.2),), ProducerControl("BHP", bhp=50), "G2")
+    deck = add_well(add_well(read(tmp_path), well()), other)
+    assert "   3 2 2 2 /   -- one well\n" in deck.text
+
+
+@pytest.mark.parametrize("name", ["O'NEIL", "P 1", "P*", "P/1", "", "PRODUCER1"])
+def test_bad_well_name_raises(name):
+    with pytest.raises(ValueError, match="must be 1 to 8 characters"):
+        format_well(well(name))
+
+
+@pytest.mark.parametrize("i", [0, -1, 2.5, True])
+def test_bad_cell_index_raises(i):
+    with pytest.raises(ValueError, match="i must be a whole number of 1 or more"):
+        format_well(well(i=i))
+
+
+def test_fractional_layer_raises():
+    with pytest.raises(ValueError, match="k_top must be a whole number"):
+        format_well(well(k=(1.5, 2)))
+
+
+@pytest.mark.parametrize("diameter", [0, -0.2, float("nan"), float("inf")])
+def test_bad_diameter_raises(diameter):
+    w = Well("P1", 1, 1, (Completion(1, 1, diameter),), ProducerControl("BHP", bhp=50))
+    with pytest.raises(ValueError, match="diameter must be a finite number above 0"):
+        format_well(w)
+
+
+def test_negative_rate_raises():
+    with pytest.raises(ValueError, match="oil_rate must be a finite number of 0 or more"):
+        format_well(well(control=ProducerControl("ORAT", oil_rate=-5, bhp=100)))
+
+
+def test_zero_rate_is_allowed():
+    assert "'ORAT' 0.0" in format_well(well(control=ProducerControl("ORAT", oil_rate=0, bhp=100)))
+
+
+def test_nan_pressure_raises():
+    with pytest.raises(ValueError, match="bhp must be a finite number above 0"):
+        format_well(well(control=ProducerControl("BHP", bhp=float("nan"))))
+
+
+def test_bad_group_name_raises():
+    w = Well("P1", 1, 1, (Completion(1, 1, 0.2),), ProducerControl("BHP", bhp=50), "MY GROUP")
+    with pytest.raises(ValueError, match="group name 'MY GROUP'"):
+        format_well(w)
+
+
+def test_unknown_phase_raises():
+    w = Well("P1", 1, 1, (Completion(1, 1, 0.2),), ProducerControl("BHP", bhp=50), phase="STEAM")
+    with pytest.raises(ValueError, match="phase must be one of"):
+        format_well(w)

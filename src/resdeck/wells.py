@@ -3,8 +3,12 @@ control, shutting and opening it. Events are tied to a report date."""
 
 from __future__ import annotations
 
+import math
+import re
+from collections import Counter
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
+from numbers import Integral, Real
 
 from .deck import Deck, render
 from .keywords import (
@@ -26,6 +30,9 @@ from .schedule import insertion_point
 _PRODUCER_TARGETS = {"ORAT": "oil_rate", "LRAT": "liquid_rate", "BHP": "bhp"}
 _INJECTOR_TARGETS = {"RATE": "rate", "BHP": "bhp"}
 _INJECTED = ("WATER", "GAS")
+_PHASES = ("OIL", "WATER", "GAS", "LIQ")
+# Well and group names: no characters that break quoting or act as patterns.
+_NAME = re.compile(r"[^\s'\"/*?]{1,8}")
 
 
 @dataclass(frozen=True)
@@ -135,7 +142,7 @@ def add_well(
         raise ValueError(f"well {well.name} is already in the deck")
     if model is not None:
         _check_on_grid(well, model)
-    deck = _grow_welldims(_insert_at(deck, text, at), well)
+    deck = _fit_welldims(_insert_at(deck, text, at))
     return _add_to_summary(deck, well.name) if add_to_summary else deck
 
 
@@ -144,25 +151,28 @@ def set_control(deck: Deck, name: str, control: ProducerControl | InjectorContro
     ``at``: a new rate or pressure target, or a new mode. Writing a control
     also opens the well if it was shut."""
     _check_control(name, control)
-    _check_defined(deck, name)
-    return _insert_at(deck, _format_control(name, control), at)
+    return _insert_at(deck, _format_control(name, control), at, well=name)
 
 
 def shut_well(deck: Deck, name: str, at) -> Deck:
     """A new deck where well ``name`` is shut at report date ``at``."""
-    _check_defined(deck, name)
-    return _insert_at(deck, render(WELOPEN, [{"well": name, "status": "SHUT"}]), at)
+    return _insert_at(deck, render(WELOPEN, [{"well": name, "status": "SHUT"}]), at, well=name)
 
 
 def open_well(deck: Deck, name: str, at) -> Deck:
     """A new deck where well ``name`` is opened again at report date ``at``,
     with the control it had before it was shut."""
-    _check_defined(deck, name)
-    return _insert_at(deck, render(WELOPEN, [{"well": name, "status": "OPEN"}]), at)
+    return _insert_at(deck, render(WELOPEN, [{"well": name, "status": "OPEN"}]), at, well=name)
 
 
-def _insert_at(deck: Deck, text: str, at) -> Deck:
+def _insert_at(deck: Deck, text: str, at, well: str | None = None) -> Deck:
+    """Insert ``text`` at report date ``at``. With ``well``, that well must
+    already be defined there: by a WELSPECS earlier in the schedule, which
+    includes earlier events on the same date."""
     deck, offset = insertion_point(deck, at)
+    if well is not None and well not in _well_names(deck, before=offset):
+        when = "the start of the run" if at is None else f"{at:%d %b %Y}"
+        raise ValueError(f"well {well} is not defined by {when}")
     newline = "" if offset == 0 or deck.text[offset - 1] == "\n" else "\n"
     return deck.insert(offset, newline + text)
 
@@ -181,24 +191,34 @@ def _format_control(name: str, ctrl: ProducerControl | InjectorControl) -> str:
     return render(WCONINJE if injector else WCONPROD, [record])
 
 
-def _well_names(deck: Deck) -> set[str]:
-    return {record.items["well"] for kw in deck.find(WELSPECS) for record in kw.records}
-
-
-def _check_defined(deck: Deck, name: str) -> None:
-    if name not in _well_names(deck):
-        raise ValueError(f"well {name} is not defined in the deck")
+def _well_names(deck: Deck, before: int | None = None) -> set[str]:
+    """Wells defined by WELSPECS, only those above offset ``before`` if given."""
+    return {
+        record.items["well"]
+        for kw in deck.find(WELSPECS)
+        if before is None or kw.start < before
+        for record in kw.records
+    }
 
 
 def _check_well(well: Well) -> None:
-    if not 1 <= len(well.name) <= 8:
-        raise ValueError(f"well name {well.name!r} must be 1 to 8 characters")
+    _check_name("well", well.name)
+    _check_name("group", well.group)
+    name = well.name
+    if well.phase is not None and well.phase not in _PHASES:
+        raise ValueError(f"well {name}: phase must be one of {list(_PHASES)}")
+    _check_index(name, "i", well.i)
+    _check_index(name, "j", well.j)
     if not well.completions:
-        raise ValueError(f"well {well.name} has no completions")
+        raise ValueError(f"well {name} has no completions")
     for c in well.completions:
-        if not 1 <= c.k_top <= c.k_bottom:
-            raise ValueError(f"well {well.name}: bad completion interval {c.k_top}-{c.k_bottom}")
-    _check_control(well.name, well.control)
+        _check_index(name, "k_top", c.k_top)
+        _check_index(name, "k_bottom", c.k_bottom)
+        if c.k_top > c.k_bottom:
+            raise ValueError(f"well {name}: bad completion interval {c.k_top}-{c.k_bottom}")
+        _check_number(name, "diameter", c.diameter, positive=True)
+        _check_number(name, "skin", c.skin)
+    _check_control(name, well.control)
 
 
 def _check_control(name: str, ctrl: ProducerControl | InjectorControl) -> None:
@@ -212,6 +232,38 @@ def _check_control(name: str, ctrl: ProducerControl | InjectorControl) -> None:
         raise ValueError(f"well {name}: control mode must be one of {sorted(targets)}")
     if getattr(ctrl, targets[ctrl.mode]) is None:
         raise ValueError(f"well {name}: mode {ctrl.mode} needs {targets[ctrl.mode]}")
+    for field in targets.values():
+        value = getattr(ctrl, field)
+        if value is not None:
+            # Rates may be zero; a pressure target or limit must be above zero.
+            _check_number(name, field, value, positive=field == "bhp", minimum=0.0)
+
+
+def _check_name(kind: str, name) -> None:
+    if not isinstance(name, str) or not _NAME.fullmatch(name):
+        raise ValueError(
+            f"{kind} name {name!r} must be 1 to 8 characters, without spaces, quotes, /, * or ?"
+        )
+
+
+def _check_index(name: str, what: str, value) -> None:
+    if isinstance(value, bool) or not isinstance(value, Integral) or value < 1:
+        raise ValueError(f"well {name}: {what} must be a whole number of 1 or more, got {value!r}")
+
+
+def _check_number(name: str, what: str, value, *, positive: bool = False, minimum=None) -> None:
+    """``value`` must be a finite number; above 0 if ``positive``, at least
+    ``minimum`` if given."""
+    ok = isinstance(value, Real) and not isinstance(value, bool) and math.isfinite(value)
+    number = float(value) if ok else 0.0
+    if positive:
+        ok, limit = ok and number > 0, " above 0"
+    elif minimum is not None:
+        ok, limit = ok and number >= minimum, f" of {minimum:g} or more"
+    else:
+        limit = ""
+    if not ok:
+        raise ValueError(f"well {name}: {what} must be a finite number{limit}, got {value!r}")
 
 
 def _check_on_grid(well: Well, model: Model) -> None:
@@ -248,21 +300,37 @@ def _add_to_summary(deck: Deck, name: str) -> Deck:
     return deck
 
 
-def _grow_welldims(deck: Deck, well: Well) -> Deck:
-    """Make room in WELLDIMS for one more well. The group counts are raised
-    by one whether or not the group is new; too large is harmless."""
-    found = deck.find(WELLDIMS)
-    old = found[0].records[0].items if found else {}
-    layers = sum(c.k_bottom - c.k_top + 1 for c in well.completions)
-    new = {
-        "max_wells": (old.get("max_wells") or 0) + 1,
-        "max_connections": max(old.get("max_connections") or 0, layers),
-        "max_groups": (old.get("max_groups") or 0) + 1,
-        "max_wells_per_group": (old.get("max_wells_per_group") or 0) + 1,
+def _fit_welldims(deck: Deck) -> Deck:
+    """Make WELLDIMS large enough for the wells the deck defines: number of
+    wells, most connections of one well, number of groups (FIELD not
+    counted) and most wells in one group. Larger existing values are kept."""
+    group_of = {
+        record.items["well"]: record.items["group"]
+        for kw in deck.find(WELSPECS)
+        for record in kw.records
     }
-    if found:
-        return deck.update(found[0].records[0], **new)
-    runspec = deck.find(RUNSPEC)
-    if not runspec:
-        raise ValueError("deck has no RUNSPEC section")
-    return deck.insert(runspec[0].end, render(WELLDIMS, [new]))
+    connections: Counter[str] = Counter()
+    for kw in deck.find(COMPDAT):
+        for record in kw.records:
+            k_top, k_bottom = record.items["k_top"], record.items["k_bottom"]
+            if k_top is not None and k_bottom is not None:
+                connections[record.items["well"]] += k_bottom - k_top + 1
+    wells_in = Counter(group for group in group_of.values() if group)
+    required = {
+        "max_wells": len(group_of),
+        "max_connections": max(connections.values(), default=0),
+        "max_groups": len(wells_in),
+        "max_wells_per_group": max(wells_in.values(), default=0),
+    }
+
+    found = deck.find(WELLDIMS)
+    if not found:
+        runspec = deck.find(RUNSPEC)
+        if not runspec:
+            raise ValueError("deck has no RUNSPEC section")
+        return deck.insert(runspec[0].end, render(WELLDIMS, [required]))
+    record = found[0].records[0]
+    new = {name: max(value, record.items[name] or 0) for name, value in required.items()}
+    if all(record.items[name] == value for name, value in new.items()):
+        return deck
+    return deck.update(record, **new)
