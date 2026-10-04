@@ -7,6 +7,7 @@ from resdeck.keywords import (
     PROPS,
     SCHEDULE,
     START,
+    TSTEP,
     WELL_SUMMARY,
     WELLDIMS,
     WELSPECS,
@@ -186,3 +187,23 @@ def test_render_variadic_item():
 def test_render_wraps_long_records():
     text = render(DIMENS, [{"nx": 10**75, "ny": 2, "nz": 3}])
     assert text == f"DIMENS\n  {10**75} 2\n  3 /\n\n"
+
+
+@pytest.mark.parametrize("skip", ["SKIP", "SKIP100", "SKIP300"])
+def test_deck_with_a_skip_block_is_rejected(tmp_path, skip):
+    text = f"RUNSPEC\n{skip}\nWELLDIMS\n 1 1 1 1 /\nENDSKIP\nWELLDIMS\n 2 2 2 2 /\n"
+    with pytest.raises(ValueError, match=f"{skip} at line 2; SKIP blocks are not supported"):
+        read(tmp_path, text)
+
+
+def test_update_a_variadic_record(tmp_path):
+    deck = read(tmp_path)
+    tstep = deck.find(TSTEP)[0].records[0]
+    assert "TSTEP\n   5 10 /\n" in deck.update(tstep, steps=(5, 10)).text
+
+
+def test_update_keeps_the_variadic_tail(tmp_path):
+    wbhp = next(spec for spec in WELL_SUMMARY if spec.name == "WBHP")
+    deck = read(tmp_path)
+    record = deck.find(wbhp)[0].records[0]
+    assert "WBHP\n  'P9' /\n" in deck.update(record, wells=("P9",)).text

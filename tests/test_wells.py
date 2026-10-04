@@ -382,3 +382,9 @@ def test_unknown_phase_raises():
     w = Well("P1", 1, 1, (Completion(1, 1, 0.2),), ProducerControl("BHP", bhp=50), phase="STEAM")
     with pytest.raises(ValueError, match="phase must be one of"):
         format_well(w)
+
+
+def test_well_cannot_be_added_to_a_schedule_with_an_include(tmp_path):
+    deck = read(tmp_path, TEXT.replace("SCHEDULE\n", "SCHEDULE\nINCLUDE\n  'sched.inc' /\n"))
+    with pytest.raises(ValueError, match="schedules in INCLUDE files are not supported"):
+        add_well(deck, well())

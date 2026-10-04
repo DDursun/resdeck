@@ -3,7 +3,8 @@
 A deck is kept as its text. Only keywords with a ``KeywordSpec`` (see
 ``keywords.py``) are looked for and parsed; everything else is left exactly
 as written, and edits replace or insert text in place. INCLUDE files are not
-opened.
+opened. Decks with SKIP blocks are rejected: keywords inside a skipped block
+would be found and edited as if they were active.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from typing import Any
 from .keywords import INCLUDE, LIST, KeywordSpec
 
 _REPEAT = re.compile(r"(\d+)\*(.*)")
+_SKIP = re.compile(r"^[ \t]*(SKIP|SKIP100|SKIP300)[ \t]*(?:--.*)?$", re.MULTILINE)
 # latin-1 maps every byte to a character, so any deck round-trips unchanged.
 _ENCODING = "latin-1"
 
@@ -28,11 +30,13 @@ class Record:
     """One record of a keyword. ``items`` maps every item name of the spec to
     its value, None where the deck leaves it defaulted. ``start`` and ``end``
     are the offsets in the deck text of the first token and of the closing
-    ``/``."""
+    ``/``. ``variadic`` is True when the last item takes the rest of the
+    record as a tuple."""
 
     items: dict[str, Any]
     start: int
     end: int
+    variadic: bool = False
 
 
 @dataclass(frozen=True)
@@ -60,7 +64,14 @@ class Deck:
     @classmethod
     def read(cls, path) -> Deck:
         path = Path(path)
-        return cls(path, path.read_text(encoding=_ENCODING))
+        text = path.read_text(encoding=_ENCODING)
+        skip = _SKIP.search(text)
+        if skip:
+            line = text.count("\n", 0, skip.start()) + 1
+            raise ValueError(
+                f"{path}: {skip.group(1)} at line {line}; SKIP blocks are not supported"
+            )
+        return cls(path, text)
 
     def write(self, path) -> None:
         """Write the deck to ``path``. Relative INCLUDE paths are rewritten
@@ -95,18 +106,25 @@ class Deck:
         return dataclasses.replace(self, text=self.text[:start] + text + self.text[end:])
 
     def update(self, record: Record, **items) -> Deck:
-        """A new deck with the named items of ``record`` set to new values.
-        Only the tokens of that record change."""
+        """A new deck with the named items of ``record`` set to new values; a
+        variadic item takes a sequence. Only that record's text changes, but
+        it is rewritten from its tokens, so comments inside a record that
+        spans several lines are dropped."""
         names = list(record.items)
         tokens = _expand(
             [raw for _, raw in _scan(self.text, record.start, record.end) if raw is not None]
         )
-        tokens += [None] * (len(names) - len(tokens))
+        fixed = len(names) - 1 if record.variadic else len(names)
+        head = tokens[:fixed] + [None] * (fixed - len(tokens))
+        rest = tokens[fixed:]
         for name, value in items.items():
             if name not in names:
                 raise ValueError(f"record has no item {name!r}")
-            tokens[names.index(name)] = _format(value)
-        text = _join(tokens)
+            if names.index(name) == fixed:  # the variadic item
+                rest = [_format(v) for v in value]
+            else:
+                head[names.index(name)] = _format(value)
+        text = _join(head + rest)
         text = text + " " if text else text
         return dataclasses.replace(
             self, text=self.text[: record.start] + text + self.text[record.end :]
@@ -240,7 +258,8 @@ def _keyword(text: str, spec: KeywordSpec, match: re.Match) -> Keyword:
             continue
         if spec.size is LIST and not tokens:
             break  # the lone "/" that closes the list
-        records.append(Record(_items(spec, tokens, line), at if first is None else first, at))
+        start = at if first is None else first
+        records.append(Record(_items(spec, tokens, line), start, at, spec.variadic))
         tokens, first = [], None
         if len(records) == spec.size:
             break

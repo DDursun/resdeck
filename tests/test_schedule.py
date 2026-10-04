@@ -112,3 +112,14 @@ def test_insertion_at_a_date_that_is_no_report_step_raises(tmp_path):
 def test_insertion_at_the_end_of_the_run_raises(tmp_path):
     with pytest.raises(ValueError, match="end of the run"):
         insertion_point(read(tmp_path), datetime(2020, 3, 15, 12))
+
+
+def test_schedule_with_an_include_is_rejected(tmp_path):
+    deck = read(tmp_path, TEXT.replace("SCHEDULE\n", "SCHEDULE\nINCLUDE\n  'sched.inc' /\n"))
+    with pytest.raises(ValueError, match="SCHEDULE includes another file at line 5"):
+        report_dates(deck)
+
+
+def test_include_outside_schedule_is_fine(tmp_path):
+    deck = read(tmp_path, TEXT.replace("RUNSPEC\n", "RUNSPEC\nINCLUDE\n  'grid.inc' /\n"))
+    assert len(report_dates(deck)) == 6

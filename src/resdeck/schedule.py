@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 
 from .deck import Deck, Keyword, render
-from .keywords import DATES, END, SCHEDULE, START, TSTEP
+from .keywords import DATES, END, INCLUDE, SCHEDULE, START, TSTEP
 
 MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
 _MONTH_NUMBER = {name: n for n, name in enumerate(MONTHS, 1)} | {"JLY": 7}
@@ -95,13 +95,23 @@ def _start(deck: Deck) -> datetime:
 
 
 def _section(deck: Deck) -> tuple[int, int]:
-    """Text offsets of the SCHEDULE section: after its keyword, to END or the end."""
+    """Text offsets of the SCHEDULE section: after its keyword, to END or the
+    end. A SCHEDULE that includes another file is rejected, since its report
+    steps and wells would be invisible here."""
     schedule = deck.find(SCHEDULE)
     if not schedule:
         raise ValueError("deck has no SCHEDULE section")
     begin = schedule[0].end
     ends = [kw.start for kw in deck.find(END) if kw.start >= begin]
-    return begin, ends[0] if ends else len(deck.text)
+    end = ends[0] if ends else len(deck.text)
+    for kw in deck.find(INCLUDE):
+        if begin <= kw.start < end:
+            line = deck.text.count("\n", 0, kw.start) + 1
+            raise ValueError(
+                f"SCHEDULE includes another file at line {line}; schedules in INCLUDE "
+                "files are not supported, copy its contents into the deck"
+            )
+    return begin, end
 
 
 def _time_keywords(deck: Deck) -> list[Keyword]:
