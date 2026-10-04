@@ -140,3 +140,62 @@ def test_egrid_without_geometry_raises(tmp_path):
     path.write_bytes(array("GRIDHEAD", "INTE", [1, 3, 2, 2]))
     with pytest.raises(ValueError, match="no COORD"):
         Model.read(path)
+
+
+def good_file(tmp_path):
+    data = array("PORO", "REAL", [0.1, 0.2, 0.3]) + array("NUMS", "INTE", [1, 2])
+    path = tmp_path / "X.INIT"
+    path.write_bytes(data)
+    return path, bytearray(data)
+
+
+def test_mismatched_trailing_marker_raises(tmp_path):
+    path, data = good_file(tmp_path)
+    data[-1] ^= 0xFF  # damage the trailing marker of the last record
+    path.write_bytes(bytes(data))
+    with pytest.raises(ValueError, match="mismatched length markers"):
+        list(read_arrays(path))
+
+
+def test_truncated_file_raises(tmp_path):
+    path, data = good_file(tmp_path)
+    path.write_bytes(bytes(data[:-6]))
+    with pytest.raises(ValueError, match="runs past the end of the file"):
+        list(read_arrays(path))
+
+
+def test_missing_data_block_raises(tmp_path):
+    path = tmp_path / "X.INIT"
+    path.write_bytes(record(b"PORO    " + struct.pack(">i", 3) + b"REAL"))
+    with pytest.raises(ValueError, match="file ends inside a record marker"):
+        list(read_arrays(path))
+
+
+def test_block_larger_than_the_element_count_raises(tmp_path):
+    header = record(b"PORO    " + struct.pack(">i", 2) + b"REAL")
+    path = tmp_path / "X.INIT"
+    path.write_bytes(header + record(np.zeros(3, ">f4").tobytes()))
+    with pytest.raises(ValueError, match="does not fit its 2 elements"):
+        list(read_arrays(path))
+
+
+def test_block_not_a_whole_number_of_elements_raises(tmp_path):
+    header = record(b"PORO    " + struct.pack(">i", 2) + b"REAL")
+    path = tmp_path / "X.INIT"
+    path.write_bytes(header + record(b"\x00" * 6))
+    with pytest.raises(ValueError, match="data block of 6 bytes"):
+        list(read_arrays(path))
+
+
+def test_negative_element_count_raises(tmp_path):
+    path = tmp_path / "X.INIT"
+    path.write_bytes(record(b"PORO    " + struct.pack(">i", -1) + b"REAL"))
+    with pytest.raises(ValueError, match="negative element count"):
+        list(read_arrays(path))
+
+
+def test_unsupported_type_raises(tmp_path):
+    path = tmp_path / "X.INIT"
+    path.write_bytes(record(b"PORO    " + struct.pack(">i", 1) + b"X231"))
+    with pytest.raises(ValueError, match="unsupported type 'X231'"):
+        list(read_arrays(path))

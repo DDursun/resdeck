@@ -59,7 +59,11 @@ class Model:
 
 def read_arrays(path):
     """Yield ``(name, array)`` for every array of an unformatted Eclipse
-    output file (EGRID, INIT, UNRST, ...), in file order."""
+    output file (EGRID, INIT, UNRST, ...), in file order.
+
+    Every Fortran record is checked: its leading and trailing length markers
+    must match and fit in the file, and the data blocks must add up to the
+    element count in the array header. A damaged file raises ValueError."""
     buf = Path(path).read_bytes()
     if len(buf) < 24 or int.from_bytes(buf[:4], "big") != 16:
         raise ValueError(f"{path} is not an unformatted Eclipse file")
@@ -67,16 +71,23 @@ def read_arrays(path):
     pos = 0
     while pos < len(buf):
         # Header record: 8-char name, element count, 4-char type.
-        name = buf[pos + 4 : pos + 12].decode("ascii").strip()
-        count = int.from_bytes(buf[pos + 12 : pos + 16], "big", signed=True)
-        kind = buf[pos + 16 : pos + 20].decode("ascii")
-        pos += 24
+        start, size, pos = _record(buf, pos, path)
+        if size != 16:
+            raise ValueError(f"{path}: array header at byte {start - 4} has length {size}, not 16")
+        try:
+            name = buf[start : start + 8].decode("ascii").strip()
+            kind = buf[start + 12 : start + 16].decode("ascii")
+        except UnicodeDecodeError:
+            raise ValueError(f"{path}: array header at byte {start - 4} is not text") from None
+        count = int.from_bytes(buf[start + 8 : start + 12], "big", signed=True)
+        if count < 0:
+            raise ValueError(f"{path}: array {name} has a negative element count")
         if kind == "MESS":
             yield name, np.empty(0)
             continue
         if kind in _DTYPES:
             dtype = np.dtype(_DTYPES[kind])
-        elif kind.startswith("C0") and kind[1:].isdigit():
+        elif kind.startswith("C0") and kind[1:].isdigit() and int(kind[1:]) > 0:
             dtype = np.dtype(f"S{int(kind[1:])}")
         else:
             raise ValueError(f"{path}: array {name} has unsupported type {kind!r}")
@@ -85,9 +96,14 @@ def read_arrays(path):
         blocks = []
         left = count
         while left > 0:
-            n = int.from_bytes(buf[pos : pos + 4], "big") // dtype.itemsize
-            blocks.append(np.frombuffer(buf, dtype, n, pos + 4))
-            pos += n * dtype.itemsize + 8
+            start, size, pos = _record(buf, pos, path)
+            n, extra = divmod(size, dtype.itemsize)
+            if extra or n == 0 or n > left:
+                raise ValueError(
+                    f"{path}: array {name} has a data block of {size} bytes that does not "
+                    f"fit its {count} elements of type {kind}"
+                )
+            blocks.append(np.frombuffer(buf, dtype, n, start))
             left -= n
         data = np.concatenate(blocks) if blocks else np.empty(0, dtype)
 
@@ -97,6 +113,20 @@ def read_arrays(path):
             yield name, data != 0
         else:
             yield name, data.astype(dtype.newbyteorder("="))
+
+
+def _record(buf: bytes, pos: int, path) -> tuple[int, int, int]:
+    """The Fortran record at byte ``pos``: (payload start, payload size,
+    position of the next record). Both length markers must agree."""
+    if pos + 4 > len(buf):
+        raise ValueError(f"{path}: file ends inside a record marker at byte {pos}")
+    size = int.from_bytes(buf[pos : pos + 4], "big", signed=True)
+    end = pos + 4 + size
+    if size < 0 or end + 4 > len(buf):
+        raise ValueError(f"{path}: record at byte {pos} runs past the end of the file")
+    if int.from_bytes(buf[end : end + 4], "big", signed=True) != size:
+        raise ValueError(f"{path}: record at byte {pos} has mismatched length markers")
+    return pos + 4, size, end + 4
 
 
 def _read_props(init, active) -> dict[str, np.ndarray]:
