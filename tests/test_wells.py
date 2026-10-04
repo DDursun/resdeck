@@ -1,3 +1,5 @@
+from datetime import date
+
 import numpy as np
 import pytest
 
@@ -10,6 +12,9 @@ from resdeck import (
     Well,
     add_well,
     format_well,
+    open_well,
+    set_control,
+    shut_well,
 )
 from resdeck.keywords import WELSPECS
 
@@ -68,7 +73,7 @@ def test_one_compdat_record_per_completion():
 def test_only_the_well_and_welldims_change(tmp_path):
     new = add_well(read(tmp_path), well())
     expected = TEXT.replace("1 1 1 1 /", "2 2 2 2 /")
-    expected = expected.replace("SCHEDULE\n", "SCHEDULE\n" + format_well(well()))
+    expected = expected.replace("TSTEP\n", format_well(well()) + "TSTEP\n")
     assert new.text == expected
 
 
@@ -91,7 +96,7 @@ def test_welldims_is_added_when_missing(tmp_path):
 def test_written_deck_reads_back(tmp_path):
     add_well(read(tmp_path), well()).write(tmp_path / "NEW.DATA")
     welspecs = Deck.read(tmp_path / "NEW.DATA").find(WELSPECS)
-    assert [r.items["well"] for kw in welspecs for r in kw.records] == ["P1", "OLD"]
+    assert [r.items["well"] for kw in welspecs for r in kw.records] == ["OLD", "P1"]
 
 
 def test_duplicate_well_name_raises(tmp_path):
@@ -178,7 +183,7 @@ def test_summary_list_with_matching_pattern_is_left_alone(tmp_path):
 
 def test_only_the_summary_section_is_extended(tmp_path):
     text = add_well(read(tmp_path, SUMMARY_TEXT), well()).text
-    assert text.endswith("WOPR\n  'OLD' /\n")
+    assert "SCHEDULE\nWOPR\n  'OLD' /\n" in text
 
 
 def test_summary_can_be_left_unchanged(tmp_path):
@@ -207,7 +212,7 @@ def test_injector_phase_follows_the_injected_fluid():
 
 def test_injector_is_added_like_a_producer(tmp_path):
     new = add_well(read(tmp_path), injector())
-    assert new.text.split("SCHEDULE\n")[1].startswith(format_well(injector()))
+    assert format_well(injector()) + "TSTEP\n" in new.text
     assert "   2 1 2 2 /" in new.text
 
 
@@ -224,3 +229,65 @@ def test_injector_mode_needs_its_target():
 def test_producer_mode_on_injector_raises():
     with pytest.raises(ValueError, match="control mode must be one of"):
         format_well(injector(mode="ORAT"))
+
+
+TIMED_TEXT = """\
+RUNSPEC
+START
+   1 'JAN' 2020 /
+SCHEDULE
+WELSPECS
+   'OLD' 'G1' 1 1 1* 'OIL' /
+/
+TSTEP
+   3*10 /
+"""
+
+
+def test_well_drilled_at_a_report_date(tmp_path):
+    new = add_well(read(tmp_path, TIMED_TEXT), well(), at=date(2020, 1, 11))
+    assert new.text.endswith("TSTEP\n  10 /\n" + format_well(well()) + "TSTEP\n  10 10 /\n")
+
+
+def test_well_at_a_date_that_is_no_report_step_raises(tmp_path):
+    with pytest.raises(ValueError, match="no report step"):
+        add_well(read(tmp_path, TIMED_TEXT), well(), at=date(2020, 1, 5))
+
+
+def test_set_control_writes_the_new_target(tmp_path):
+    control = ProducerControl("LRAT", liquid_rate=900, bhp=150)
+    new = set_control(read(tmp_path, TIMED_TEXT), "OLD", control, at=date(2020, 1, 21))
+    record = "  'OLD' 'OPEN' 'LRAT' 1* 1* 1* 900.0 1* 150.0 /\n"
+    assert new.text.endswith("TSTEP\n  10 10 /\nWCONPROD\n" + record + "/\n\nTSTEP\n  10 /\n")
+
+
+def test_set_control_of_an_injector(tmp_path):
+    control = InjectorControl("GAS", "BHP", bhp=400)
+    new = set_control(read(tmp_path, TIMED_TEXT), "OLD", control, at=date(2020, 1, 11))
+    assert "WCONINJE\n  'OLD' 'GAS' 'OPEN' 'BHP' 1* 1* 400.0 /\n/\n" in new.text
+
+
+def test_shut_and_open_a_well(tmp_path):
+    deck = shut_well(read(tmp_path, TIMED_TEXT), "OLD", at=date(2020, 1, 11))
+    deck = open_well(deck, "OLD", at=date(2020, 1, 21))
+    assert deck.text.endswith(
+        "TSTEP\n  10 /\nWELOPEN\n  'OLD' 'SHUT' /\n/\n\n"
+        "TSTEP\n  10 /\nWELOPEN\n  'OLD' 'OPEN' /\n/\n\n"
+        "TSTEP\n  10 /\n"
+    )
+
+
+def test_events_on_the_same_date_keep_their_order(tmp_path):
+    deck = shut_well(read(tmp_path, TIMED_TEXT), "OLD", at=date(2020, 1, 11))
+    deck = open_well(deck, "OLD", at=date(2020, 1, 11))
+    assert deck.text.index("'SHUT'") < deck.text.index("'OPEN' /")
+
+
+def test_event_for_an_unknown_well_raises(tmp_path):
+    with pytest.raises(ValueError, match="well P9 is not defined"):
+        shut_well(read(tmp_path, TIMED_TEXT), "P9", at=date(2020, 1, 11))
+
+
+def test_set_control_checks_the_control(tmp_path):
+    with pytest.raises(ValueError, match="mode ORAT needs oil_rate"):
+        set_control(read(tmp_path, TIMED_TEXT), "OLD", ProducerControl("ORAT"), date(2020, 1, 11))

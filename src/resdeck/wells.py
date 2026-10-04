@@ -1,4 +1,5 @@
-"""Wells, and adding them to a deck."""
+"""Wells, and the well events of a schedule: drilling a well, changing its
+control, shutting and opening it. Events are tied to a report date."""
 
 from __future__ import annotations
 
@@ -9,16 +10,17 @@ from .deck import Deck, render
 from .keywords import (
     COMPDAT,
     RUNSPEC,
-    SCHEDULE,
     SECTIONS,
     SUMMARY,
     WCONINJE,
     WCONPROD,
     WELL_SUMMARY,
     WELLDIMS,
+    WELOPEN,
     WELSPECS,
 )
 from .model import Model
+from .schedule import insertion_point
 
 # Control mode -> the field of the control that holds its target.
 _PRODUCER_TARGETS = {"ORAT": "oil_rate", "LRAT": "liquid_rate", "BHP": "bhp"}
@@ -82,8 +84,7 @@ def format_well(well: Well) -> str:
     producer or WCONINJE for an injector."""
     _check_well(well)
     ctrl = well.control
-    injector = isinstance(ctrl, InjectorControl)
-    phase = well.phase or (ctrl.fluid if injector else "OIL")
+    phase = well.phase or (ctrl.fluid if isinstance(ctrl, InjectorControl) else "OIL")
     welspecs = {
         "well": well.name,
         "group": well.group,
@@ -104,25 +105,23 @@ def format_well(well: Well) -> str:
         }
         for c in well.completions
     ]
-    text = render(WELSPECS, [welspecs]) + render(COMPDAT, compdat)
-    if injector:
-        control = {"well": well.name, "fluid": ctrl.fluid, "status": "OPEN", "mode": ctrl.mode}
-        targets = _INJECTOR_TARGETS
-    else:
-        control = {"well": well.name, "status": "OPEN", "mode": ctrl.mode}
-        targets = _PRODUCER_TARGETS
-    for name in targets.values():
-        value = getattr(ctrl, name)
-        control[name] = None if value is None else float(value)
-    return text + render(WCONINJE if injector else WCONPROD, [control])
+    return (
+        render(WELSPECS, [welspecs]) + render(COMPDAT, compdat) + _format_control(well.name, ctrl)
+    )
 
 
 def add_well(
-    deck: Deck, well: Well, model: Model | None = None, *, add_to_summary: bool = True
+    deck: Deck,
+    well: Well,
+    model: Model | None = None,
+    *,
+    at=None,
+    add_to_summary: bool = True,
 ) -> Deck:
-    """A new deck with ``well`` defined at the start of the SCHEDULE section,
-    so it is open from the first report step. WELLDIMS is enlarged to make
-    room for it. With ``model``, the well is checked against the grid.
+    """A new deck with ``well`` defined at report date ``at`` (a date from
+    ``report_dates``), or at the start of the run when ``at`` is None.
+    WELLDIMS is enlarged to make room for it. With ``model``, the well is
+    checked against the grid.
 
     With ``add_to_summary``, the well is added to every well summary vector
     the SUMMARY section asks for by well name (WOPR, WBHP, ...), so it is
@@ -132,16 +131,63 @@ def add_well(
     and summary vectors in INCLUDE files are not extended.
     """
     text = format_well(well)
-    for kw in deck.find(WELSPECS):
-        if any(record.items["well"] == well.name for record in kw.records):
-            raise ValueError(f"well {well.name} is already in the deck")
+    if well.name in _well_names(deck):
+        raise ValueError(f"well {well.name} is already in the deck")
     if model is not None:
         _check_on_grid(well, model)
-    schedule = deck.find(SCHEDULE)
-    if not schedule:
-        raise ValueError("deck has no SCHEDULE section")
-    deck = _grow_welldims(deck.insert(schedule[0].end, text), well)
+    deck = _grow_welldims(_insert_at(deck, text, at), well)
     return _add_to_summary(deck, well.name) if add_to_summary else deck
+
+
+def set_control(deck: Deck, name: str, control: ProducerControl | InjectorControl, at) -> Deck:
+    """A new deck where well ``name`` switches to ``control`` at report date
+    ``at``: a new rate or pressure target, or a new mode. Writing a control
+    also opens the well if it was shut."""
+    _check_control(name, control)
+    _check_defined(deck, name)
+    return _insert_at(deck, _format_control(name, control), at)
+
+
+def shut_well(deck: Deck, name: str, at) -> Deck:
+    """A new deck where well ``name`` is shut at report date ``at``."""
+    _check_defined(deck, name)
+    return _insert_at(deck, render(WELOPEN, [{"well": name, "status": "SHUT"}]), at)
+
+
+def open_well(deck: Deck, name: str, at) -> Deck:
+    """A new deck where well ``name`` is opened again at report date ``at``,
+    with the control it had before it was shut."""
+    _check_defined(deck, name)
+    return _insert_at(deck, render(WELOPEN, [{"well": name, "status": "OPEN"}]), at)
+
+
+def _insert_at(deck: Deck, text: str, at) -> Deck:
+    deck, offset = insertion_point(deck, at)
+    newline = "" if offset == 0 or deck.text[offset - 1] == "\n" else "\n"
+    return deck.insert(offset, newline + text)
+
+
+def _format_control(name: str, ctrl: ProducerControl | InjectorControl) -> str:
+    injector = isinstance(ctrl, InjectorControl)
+    if injector:
+        record = {"well": name, "fluid": ctrl.fluid, "status": "OPEN", "mode": ctrl.mode}
+        targets = _INJECTOR_TARGETS
+    else:
+        record = {"well": name, "status": "OPEN", "mode": ctrl.mode}
+        targets = _PRODUCER_TARGETS
+    for field in targets.values():
+        value = getattr(ctrl, field)
+        record[field] = None if value is None else float(value)
+    return render(WCONINJE if injector else WCONPROD, [record])
+
+
+def _well_names(deck: Deck) -> set[str]:
+    return {record.items["well"] for kw in deck.find(WELSPECS) for record in kw.records}
+
+
+def _check_defined(deck: Deck, name: str) -> None:
+    if name not in _well_names(deck):
+        raise ValueError(f"well {name} is not defined in the deck")
 
 
 def _check_well(well: Well) -> None:
@@ -152,17 +198,20 @@ def _check_well(well: Well) -> None:
     for c in well.completions:
         if not 1 <= c.k_top <= c.k_bottom:
             raise ValueError(f"well {well.name}: bad completion interval {c.k_top}-{c.k_bottom}")
-    ctrl = well.control
+    _check_control(well.name, well.control)
+
+
+def _check_control(name: str, ctrl: ProducerControl | InjectorControl) -> None:
     if isinstance(ctrl, InjectorControl):
         if ctrl.fluid not in _INJECTED:
-            raise ValueError(f"well {well.name}: injected fluid must be one of {list(_INJECTED)}")
+            raise ValueError(f"well {name}: injected fluid must be one of {list(_INJECTED)}")
         targets = _INJECTOR_TARGETS
     else:
         targets = _PRODUCER_TARGETS
     if ctrl.mode not in targets:
-        raise ValueError(f"well {well.name}: control mode must be one of {sorted(targets)}")
+        raise ValueError(f"well {name}: control mode must be one of {sorted(targets)}")
     if getattr(ctrl, targets[ctrl.mode]) is None:
-        raise ValueError(f"well {well.name}: mode {ctrl.mode} needs {targets[ctrl.mode]}")
+        raise ValueError(f"well {name}: mode {ctrl.mode} needs {targets[ctrl.mode]}")
 
 
 def _check_on_grid(well: Well, model: Model) -> None:

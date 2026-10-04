@@ -181,3 +181,8 @@ def test_variadic_item_collects_the_rest_of_the_record(tmp_path):
 def test_render_variadic_item():
     wopr = next(spec for spec in WELL_SUMMARY if spec.name == "WOPR")
     assert render(wopr, [{"wells": ("P1", "P2")}]) == "WOPR\n  'P1' 'P2' /\n\n"
+
+
+def test_render_wraps_long_records():
+    text = render(DIMENS, [{"nx": 10**75, "ny": 2, "nz": 3}])
+    assert text == f"DIMENS\n  {10**75} 2\n  3 /\n\n"

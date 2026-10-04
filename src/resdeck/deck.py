@@ -50,7 +50,7 @@ class Keyword:
 class Deck:
     """The text of one deck file.
 
-    ``insert`` and ``update`` return a new deck; offsets of keywords found
+    ``insert``, ``splice`` and ``update`` return a new deck; offsets of keywords found
     in the old one are no longer valid in it, so call ``find`` again.
     """
 
@@ -87,7 +87,12 @@ class Deck:
 
     def insert(self, offset: int, text: str) -> Deck:
         """A new deck with ``text`` inserted at ``offset``."""
-        return dataclasses.replace(self, text=self.text[:offset] + text + self.text[offset:])
+        return self.splice(offset, offset, text)
+
+    def splice(self, start: int, end: int, text: str) -> Deck:
+        """A new deck with the text between offsets ``start`` and ``end``
+        replaced by ``text``."""
+        return dataclasses.replace(self, text=self.text[:start] + text + self.text[end:])
 
     def update(self, record: Record, **items) -> Deck:
         """A new deck with the named items of ``record`` set to new values.
@@ -139,12 +144,19 @@ def _format(value) -> str | None:
     raise ValueError(f"cannot write {value!r} to a deck")
 
 
-def _join(tokens) -> str:
-    """Tokens as record text; None is a defaulted item, dropped at the end."""
+def _join(tokens, width: int = 78) -> str:
+    """Tokens as record text; None is a defaulted item, dropped at the end.
+    Long records are wrapped, since deck lines are limited to 132 characters."""
     tokens = list(tokens)
     while tokens and tokens[-1] is None:
         tokens.pop()
-    return " ".join("1*" if t is None else t for t in tokens)
+    lines = [""]
+    for token in ("1*" if t is None else t for t in tokens):
+        if lines[-1] and len(lines[-1]) + 1 + len(token) > width:
+            lines.append(token)
+        else:
+            lines[-1] = f"{lines[-1]} {token}" if lines[-1] else token
+    return "\n  ".join(lines)
 
 
 def _expand(tokens) -> list[str | None]:

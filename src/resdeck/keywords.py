@@ -198,6 +198,42 @@ WCONINJE = KeywordSpec(
     },
 )
 
+# Without I, J, K or completion numbers the status applies to the whole well.
+WELOPEN = KeywordSpec(
+    "WELOPEN",
+    "open or shut wells",
+    ("SCHEDULE",),
+    size=LIST,
+    items={
+        "well": str,
+        "status": str,
+        "i": int,
+        "j": int,
+        "k": int,
+        "first_completion": int,
+        "last_completion": int,
+    },
+)
+
+DATES = KeywordSpec(
+    "DATES",
+    "advance to report dates",
+    ("SCHEDULE",),
+    size=LIST,
+    items={"day": int, "month": str, "year": int, "time": str},
+)
+
+TSTEP = KeywordSpec(
+    "TSTEP",
+    "advance by report steps in days",
+    ("SCHEDULE",),
+    size=1,
+    items={"steps": number},
+    variadic=True,
+)
+
+END = KeywordSpec("END", "end of input", SECTION_NAMES)
+
 
 # SUMMARY keywords that take one record listing well names (or patterns such as
 # 'P*'); an empty list means every well. Well vectors with other record layouts
