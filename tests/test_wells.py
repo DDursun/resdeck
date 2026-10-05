@@ -388,3 +388,32 @@ def test_well_cannot_be_added_to_a_schedule_with_an_include(tmp_path):
     deck = read(tmp_path, TEXT.replace("SCHEDULE\n", "SCHEDULE\nINCLUDE\n  'sched.inc' /\n"))
     with pytest.raises(ValueError, match="schedules in INCLUDE files are not supported"):
         add_well(deck, well())
+
+
+REGROUP_TEXT = """\
+RUNSPEC
+START
+   1 'JAN' 2020 /
+WELLDIMS
+   3 1 2 3 /
+SCHEDULE
+WELSPECS
+   'A' 'G1' 1 1 1* 'OIL' /
+   'B' 'G1' 2 1 1* 'OIL' /
+   'C' 'G1' 3 1 1* 'OIL' /
+/
+TSTEP
+   10 /
+WELSPECS
+   'B' 'G2' 2 1 1* 'OIL' /
+   'C' 'G2' 3 1 1* 'OIL' /
+/
+TSTEP
+   10 /
+"""
+
+
+def test_welldims_covers_a_group_at_its_fullest(tmp_path):
+    # G1 holds A, B, C and the new well at the start, before B and C move to G2.
+    new = add_well(read(tmp_path, REGROUP_TEXT), well(k=(1, 1)))
+    assert "WELLDIMS\n   4 1 2 4 /\n" in new.text

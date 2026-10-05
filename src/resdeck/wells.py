@@ -303,9 +303,12 @@ def _add_to_summary(deck: Deck, name: str) -> Deck:
 def _fit_welldims(deck: Deck) -> Deck:
     """Make WELLDIMS large enough for the wells the deck defines: number of
     wells, most connections of one well, number of groups (FIELD not
-    counted) and most wells in one group. Larger existing values are kept."""
-    group_of = {
-        record.items["well"]: record.items["group"]
+    counted) and most wells in one group. Larger existing values are kept.
+
+    A well that a later WELSPECS moves to another group counts in every
+    group it has been in, so a group is never sized below its fullest."""
+    memberships = {
+        (record.items["well"], record.items["group"])
         for kw in deck.find(WELSPECS)
         for record in kw.records
     }
@@ -315,9 +318,9 @@ def _fit_welldims(deck: Deck) -> Deck:
             k_top, k_bottom = record.items["k_top"], record.items["k_bottom"]
             if k_top is not None and k_bottom is not None:
                 connections[record.items["well"]] += k_bottom - k_top + 1
-    wells_in = Counter(group for group in group_of.values() if group)
+    wells_in = Counter(group for _, group in memberships if group)
     required = {
-        "max_wells": len(group_of),
+        "max_wells": len({well for well, _ in memberships}),
         "max_connections": max(connections.values(), default=0),
         "max_groups": len(wells_in),
         "max_wells_per_group": max(wells_in.values(), default=0),
