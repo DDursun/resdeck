@@ -1,10 +1,12 @@
-"""Playground: read a simple case (SPE1), look at it, add wells, write a new deck.
+"""Playground: read a simple case (SPE1), look at it, add wells, write a new deck,
+then do the same through a scenario.
 
 Run from the project root:
 
     uv run python example.py
 """
 
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -12,12 +14,25 @@ import numpy as np
 from resdeck import (
     Completion,
     Deck,
+    Drill,
     InjectorControl,
     Model,
+    Open,
     ProducerControl,
+    Scenario,
+    SetControl,
+    Shut,
     Well,
+    active_columns,
     add_well,
+    apply,
+    column_xy,
     format_well,
+    load_scenario,
+    nearest_columns,
+    report_dates,
+    save_scenario,
+    well_cells,
 )
 from resdeck import keywords as kw
 
@@ -26,6 +41,7 @@ DECK = ROOT / "opm-data" / "spe1" / "SPE1CASE1.DATA"
 EGRID = ROOT / "runs" / "spe1_test" / "SPE1CASE1.EGRID"
 INIT = ROOT / "runs" / "spe1_test" / "SPE1CASE1.INIT"
 OUT = ROOT / "runs" / "spe1_p2" / "SPE1_P2.DATA"
+SCENARIO_OUT = ROOT / "runs" / "spe1_scenario" / "SPE1_SCENARIO.DATA"
 
 # --- 1. Read the deck -------------------------------------------------------
 # Only keywords listed in resdeck/keywords.py are parsed. Each record is a
@@ -107,8 +123,57 @@ print(f"Written: {OUT}")
 welldims = new_deck.find(kw.WELLDIMS)[0].records[0].items
 print(f"WELLDIMS is now {[welldims[name] for name in list(welldims)[:4]]}")
 
-print("\nTo run it in Flow, from the Research3 folder:")
+# --- 5. The same kind of plan as a scenario ---------------------------------
+# A scenario is plain data: a list of dated events, no deck text. apply() plays
+# it onto a deck. Event dates need not be report steps of the deck: apply adds
+# them (SPE1 has no report step on 15 Mar 2016 or 1 Jul 2017).
+scenario = Scenario(
+    events=(
+        Drill(injector),  # no date: at the start of the run
+        Drill(producer, date(2016, 3, 15)),
+        SetControl("P2", ProducerControl("ORAT", oil_rate=2000, bhp=1000), date(2017, 7, 1)),
+        Shut("PROD", date(2018, 1, 1)),
+        Open("PROD", date(2019, 1, 1)),
+    ),
+    metadata={"realization": "SPE1CASE1", "note": "written by hand in example.py"},
+)
+
+scenario_deck = apply(deck, scenario, model)
+
+SCENARIO_OUT.parent.mkdir(parents=True, exist_ok=True)
+scenario_deck.write(SCENARIO_OUT)
+save_scenario(scenario, SCENARIO_OUT.with_suffix(".json"))
+print(f"\nScenario deck: {SCENARIO_OUT}")
+print(f"Scenario file: {SCENARIO_OUT.with_suffix('.json')}")
+print(
+    f"Report steps:  {len(report_dates(deck)) - 1} in SPE1, "
+    f"{len(report_dates(scenario_deck)) - 1} after the scenario's dates were added"
+)
+
+# The saved file gives the same scenario back, and so the same deck.
+assert (
+    apply(deck, load_scenario(SCENARIO_OUT.with_suffix(".json")), model).text == scenario_deck.text
+)
+
+# --- 6. Columns and 2D maps -------------------------------------------------
+# A column is the stack of cells sharing one (i, j). Placement works on columns
+# and on (nx, ny) maps with one value per column.
+x, y = column_xy(model)
+i, j, inside = nearest_columns(model, 4300.0, 4700.0)
+print(f"\nColumns with an active cell: {int(active_columns(model).sum())} of {x.size}")
+print(
+    f"Point (4300, 4700) is in column ({int(i)}, {int(j)}), centred at "
+    f"({x[i - 1, j - 1]:.0f}, {y[i - 1, j - 1]:.0f}); on the grid: {bool(inside)}"
+)
+print(f"Cells of well {producer.name}: {well_cells(producer)}")
+
+print("\nTo run a deck in Flow, from the Research3 folder:")
 print("  WSL (bash):")
 print(f"    flow runs/spe1_p2/{OUT.name} --output-dir=runs/spe1_p2/out")
+print(f"    flow runs/spe1_scenario/{SCENARIO_OUT.name} --output-dir=runs/spe1_scenario/out")
 print("  Windows (PowerShell):")
 print(rf"    tools\flow.cmd runs\spe1_p2\{OUT.name} --output-dir=runs\spe1_p2\out")
+print(
+    rf"    tools\flow.cmd runs\spe1_scenario\{SCENARIO_OUT.name} "
+    r"--output-dir=runs\spe1_scenario\out"
+)

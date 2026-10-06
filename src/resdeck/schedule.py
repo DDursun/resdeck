@@ -29,7 +29,7 @@ def add_dates(deck: Deck, dates) -> Deck:
     existing step splits it in two; dates after the last step are appended
     as one DATES keyword. Dates that are already report dates are skipped."""
     start = _start(deck)
-    wanted = sorted({_as_datetime(d) for d in dates})
+    wanted = sorted({as_datetime(d) for d in dates})
     if wanted and wanted[0] < start:
         raise ValueError(f"{wanted[0]:%d %b %Y} is before the START date {start:%d %b %Y}")
 
@@ -64,12 +64,12 @@ def insertion_point(deck: Deck, at=None) -> tuple[Deck, int]:
     DATES or TSTEP. A DATES or TSTEP keyword that ``at`` falls inside is
     split in two, so the deck returned may differ from ``deck``."""
     time_keywords = _time_keywords(deck)
-    if at is None or (time_keywords and _as_datetime(at) == _start(deck)):
+    if at is None or (time_keywords and as_datetime(at) == _start(deck)):
         if time_keywords:
             return deck, time_keywords[0].start
         return deck, _section(deck)[1]
 
-    at = _as_datetime(at)
+    at = as_datetime(at)
     start = _start(deck)
     steps = _steps(deck, start)
     n = next((i for i, (_, _, when) in enumerate(steps) if when == at), None)
@@ -177,7 +177,7 @@ def _days(delta: timedelta) -> int | float:
     return int(days) if days.is_integer() else days
 
 
-def _as_datetime(value) -> datetime:
+def as_datetime(value) -> datetime:
     if isinstance(value, datetime):
         return value
     if isinstance(value, date):
