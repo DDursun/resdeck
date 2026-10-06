@@ -3,6 +3,7 @@ from .deck import Deck, Keyword, Record, render
 from .geometry import active_columns, column_xy, nearest_columns, well_cells
 from .keywords import KeywordSpec
 from .model import Model, read_arrays
+from .patterns import PATTERNS, build_pattern
 from .scenario import (
     Drill,
     Open,
@@ -35,6 +36,7 @@ __all__ = [
     "KeywordSpec",
     "Model",
     "Open",
+    "PATTERNS",
     "ProducerControl",
     "Record",
     "Scenario",
@@ -45,6 +47,7 @@ __all__ = [
     "add_dates",
     "add_well",
     "apply",
+    "build_pattern",
     "column_xy",
     "format_well",
     "keywords",

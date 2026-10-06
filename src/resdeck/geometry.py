@@ -19,6 +19,9 @@ from .wells import Well
 # nearest column centre, measured along each grid direction separately. A cell
 # reaches 0.5 from its centre; the margin allows for uneven column spacing.
 _REACH = 0.75
+# Past an outermost column there is no next cell to be in, so outwards from it
+# the limit is the cell's own reach: the edge of the grid.
+_EDGE = 0.5
 
 
 def well_cells(well: Well) -> list[tuple[int, int, int]]:
@@ -45,9 +48,10 @@ def nearest_columns(model: Model, x, y) -> tuple[np.ndarray, np.ndarray, np.ndar
     """The column nearest to each point (``x``, ``y``).
 
     Returns ``(i, j, inside)`` with the shape of ``x``: 1-based column
-    indices, and False in ``inside`` where the point is off the grid, more
-    than about a quarter of a cell past the edge of the nearest column. The
-    column may be inactive; check it against ``active_columns``.
+    indices, and False in ``inside`` where the point is off the grid. The
+    edge of the grid is taken as half a column spacing beyond the centres of
+    the outermost columns, which is exact where those columns are evenly
+    spaced. The column may be inactive; check it against ``active_columns``.
     """
     cx, cy = column_xy(model)
     if min(cx.shape) < 2:
@@ -69,5 +73,11 @@ def nearest_columns(model: Model, x, y) -> tuple[np.ndarray, np.ndarray, np.ndar
     with np.errstate(divide="ignore", invalid="ignore"):
         u = (dx * by - dy * bx) / area
         v = (dy * ax - dx * ay) / area
-    inside = (np.abs(u) <= _REACH) & (np.abs(v) <= _REACH)
+    nx, ny = cx.shape
+    inside = (
+        (u >= -np.where(i == 0, _EDGE, _REACH))
+        & (u <= np.where(i == nx - 1, _EDGE, _REACH))
+        & (v >= -np.where(j == 0, _EDGE, _REACH))
+        & (v <= np.where(j == ny - 1, _EDGE, _REACH))
+    )
     return (i + 1).reshape(x.shape), (j + 1).reshape(x.shape), inside.reshape(x.shape)

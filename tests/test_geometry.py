@@ -76,9 +76,9 @@ def test_point_far_from_the_grid_is_outside():
 
 
 def test_point_just_past_the_edge_is_outside():
-    # The grid ends at x = 400; the last column centre is at 350.
-    _, _, inside = nearest_columns(model(), [399.0, 440.0], [75.0, 75.0])
-    assert inside.tolist() == [True, False]
+    # The grid covers x 0 to 400 and y 0 to 150.
+    _, _, inside = nearest_columns(model(), [399.0, 405.0, -5.0, 200.0], [75.0, 75.0, 75.0, 152.0])
+    assert inside.tolist() == [True, False, False, False]
 
 
 def test_nearest_column_may_be_inactive():
